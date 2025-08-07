@@ -383,6 +383,22 @@ class TraefikIngressCharm(CharmBase):
         return None
 
     @property
+    def _client_ips_skip_forward_auth(self) -> str:
+        """Get the config of client IPs allowed to skip forward_auth."""
+        return cast(str, self.config["client_ips_skip_forward_auth"])
+
+    @property
+    def _client_ips_skip_forward_auth_set(self) -> Optional[Set[str]]:
+        """Get the set of client IPs allowed to skip forward_auth."""
+        client_ips_skip_forward_auth_config = self._client_ips_skip_forward_auth
+        if client_ips_skip_forward_auth_config:
+            client_ip_skip_forward_auth = set()
+            for entry in client_ips_skip_forward_auth_config.split(","):
+                client_ip_skip_forward_auth.add(entry)
+            return client_ip_skip_forward_auth
+        return None
+
+    @property
     def _basic_auth_user(self) -> Optional[str]:
         """A single user for the global basic auth configuration.
 
@@ -1098,6 +1114,7 @@ class TraefikIngressCharm(CharmBase):
                 model_name=data.get("model"), app_name=data.get("name")
             ),
             forward_auth_config=self.forward_auth.get_provider_info(),
+            client_ips_skipping_forward_auth=self._client_ips_skip_forward_auth_set,
         )
 
         if self.unit.is_leader():
@@ -1140,6 +1157,7 @@ class TraefikIngressCharm(CharmBase):
                 if data.app.healthcheck_params is not None
                 else {}
             ),
+            client_ips_skipping_forward_auth=self._client_ips_skip_forward_auth_set,
         )
 
         if self.unit.is_leader():
@@ -1195,6 +1213,7 @@ class TraefikIngressCharm(CharmBase):
                         model_name=data.get("model"), app_name=data.get("name")
                     ),
                     forward_auth_config=self.forward_auth.get_provider_info(),
+                    client_ips_skipping_forward_auth=self._client_ips_skip_forward_auth_set,
                 )
 
                 if self.unit.is_leader():

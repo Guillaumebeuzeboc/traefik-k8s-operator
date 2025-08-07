@@ -21,6 +21,13 @@ options:
       It also requires the `experimental_forward_auth` relation to be integrated.
     type: string
     default: ""
+  client_ips_skip_forward_auth:
+    description: |
+      Comma separated list of ip or ip range that can skip the forward-auth.
+      This allows applications to speak to each others without having authenticate.
+      It requires the `experimental_forward_auth` relation to be integrated.
+    type: string
+    default: ""
   loadbalancer_annotations:
     description: |
       A comma-separated list of annotations to apply to the LoadBalancer service.

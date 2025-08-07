@@ -11,7 +11,7 @@ import socket
 from copy import deepcopy
 from pathlib import Path
 from string import Template
-from typing import Any, Dict, Iterable, List, Optional, Union, cast
+from typing import Any, Dict, Iterable, List, Optional, Set, Union, cast
 
 import yaml
 from charms.oathkeeper.v0.forward_auth import ForwardAuthConfig
@@ -336,6 +336,7 @@ class Traefik:
         external_host: str,
         forward_auth_app: bool,
         forward_auth_config: Optional[ForwardAuthConfig],
+        client_ips_skipping_forward_auth: Optional[Set[str]],
     ) -> dict:
         """Generate a config dict for IngressPerUnit."""
         lb_servers = [{"url": f"{scheme or 'http'}://{host}:{port}"}]
@@ -348,6 +349,7 @@ class Traefik:
             external_host=external_host,
             forward_auth_app=forward_auth_app,
             forward_auth_config=forward_auth_config,
+            client_ips_skipping_forward_auth=client_ips_skipping_forward_auth,
         )
 
     def get_per_app_http_config(
@@ -363,6 +365,7 @@ class Traefik:
         forward_auth_app: bool,
         forward_auth_config: Optional[ForwardAuthConfig],
         healthcheck_params: Optional[Dict[str, Any]],
+        client_ips_skipping_forward_auth: Optional[Set[str]],
     ) -> dict:
         """Generate a config dict for Ingress(PerApp)."""
         # purge potential Nones
@@ -378,6 +381,7 @@ class Traefik:
             forward_auth_app=forward_auth_app,
             forward_auth_config=forward_auth_config,
             healthcheck_params=healthcheck_params,
+            client_ips_skipping_forward_auth=client_ips_skipping_forward_auth,
         )
 
     def get_per_leader_http_config(
@@ -392,6 +396,7 @@ class Traefik:
         external_host: str,
         forward_auth_app: bool,
         forward_auth_config: Optional[ForwardAuthConfig],
+        client_ips_skipping_forward_auth: Optional[Set[str]],
     ) -> dict:
         """Generate a config dict for Ingress v1 (PerLeader)."""
         lb_servers = [{"url": f"http://{host}:{port}"}]
@@ -404,6 +409,7 @@ class Traefik:
             external_host=external_host,
             forward_auth_app=forward_auth_app,
             forward_auth_config=forward_auth_config,
+            client_ips_skipping_forward_auth=client_ips_skipping_forward_auth,
         )
 
     def _generate_config_block(
@@ -417,6 +423,7 @@ class Traefik:
         forward_auth_app: bool,
         forward_auth_config: Optional[ForwardAuthConfig],
         healthcheck_params: Optional[Dict[str, Any]] = None,
+        client_ips_skipping_forward_auth: Optional[Set[str]] = None,
     ) -> Dict[str, Any]:
         """Generate a configuration segment.
 
@@ -443,11 +450,16 @@ class Traefik:
                 "rule": route_rule,
                 "service": traefik_service_name,
                 "entryPoints": ["web"],
+                "priority": 10,
             },
         }
         router_cfg.update(
             self.generate_tls_config_for_route(
-                traefik_router_name, route_rule, traefik_service_name, external_host=external_host
+                traefik_router_name,
+                route_rule,
+                traefik_service_name,
+                external_host=external_host,
+                priority=10,
             )
         )
 
@@ -521,8 +533,80 @@ class Traefik:
 
             if f"{traefik_router_name}-tls" in router_cfg:
                 router_cfg[f"{traefik_router_name}-tls"]["middlewares"] = list(middlewares.keys())
+        self._skipping_auth_if_allowed_ips_are_provided(
+            route_rule=route_rule,
+            traefik_router_name=traefik_router_name,
+            traefik_service_name=traefik_service_name,
+            redirect_https=redirect_https_,
+            strip_prefix=strip_prefix_,
+            external_host=external_host,
+            scheme=scheme_,
+            prefix=prefix,
+            forward_auth_app=forward_auth_app,
+            config=config,
+            client_ips_skipping_forward_auth=client_ips_skipping_forward_auth,
+        )
 
         return config
+
+    def _skipping_auth_if_allowed_ips_are_provided(
+        self,
+        *,
+        route_rule: str,
+        traefik_router_name: str,
+        traefik_service_name: str,
+        redirect_https: bool,
+        strip_prefix: bool,
+        external_host: str,
+        scheme: str,
+        prefix: str,
+        forward_auth_app: bool,
+        config: Dict[str, Any],
+        client_ips_skipping_forward_auth: Optional[Set[str]],
+    ):
+        # skipping auth if allowed IPs are provided
+        if client_ips_skipping_forward_auth and forward_auth_app:
+            route_rule_no_auth = route_rule
+            for client_ip in client_ips_skipping_forward_auth:
+                route_rule_no_auth += f" && ClientIP(`{client_ip}`)"
+            traefik_router_name_no_auth = f"{traefik_router_name}-no-auth"
+            router_cfg_no_auth = {
+                traefik_router_name_no_auth: {
+                    "rule": route_rule_no_auth,
+                    "service": traefik_service_name,
+                    "entryPoints": ["web"],
+                    "priority": 100,
+                },
+            }
+            router_cfg_no_auth.update(
+                self.generate_tls_config_for_route(
+                    traefik_router_name_no_auth,
+                    route_rule_no_auth,
+                    traefik_service_name,
+                    external_host=external_host,
+                    priority=100,
+                )
+            )
+
+            middlewares_no_auth = self._generate_middleware_config(
+                redirect_https=redirect_https,
+                strip_prefix=strip_prefix,
+                scheme=scheme,
+                prefix=prefix,
+                forward_auth_app=False,
+                forward_auth_config=None,
+            )
+            if middlewares_no_auth:
+                config["http"]["middlewares"].update(middlewares_no_auth)
+                router_cfg_no_auth[traefik_router_name_no_auth]["middlewares"] = list(
+                    middlewares_no_auth.keys()
+                )
+
+                if f"{traefik_router_name_no_auth}-tls" in router_cfg_no_auth:
+                    router_cfg_no_auth[f"{traefik_router_name_no_auth}-tls"]["middlewares"] = list(
+                        middlewares_no_auth.keys()
+                    )
+            config["http"]["routers"].update(router_cfg_no_auth)
 
     def _generate_middleware_config(
         self,
@@ -585,6 +669,7 @@ class Traefik:
         service_name: str,
         external_host: str,
         entrypoint: Optional[str] = None,
+        priority: int = 0,
     ) -> Dict[str, Any]:
         """Generate a TLS configuration segment."""
         if is_hostname(external_host):
@@ -607,6 +692,7 @@ class Traefik:
                 "service": service_name,
                 "entryPoints": [entrypoint if entrypoint else "websecure"],
                 "tls": tls_entry,
+                "priority": priority,
             }
         }
 
